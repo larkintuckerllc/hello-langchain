@@ -11,15 +11,17 @@ def handle_agent_command(ack, command, client, respond):
     ack()
     channel_id = command["channel_id"]
     prompt = command.get("text", "")
-    message = f"Working on the prompt... {prompt}"
+    message = f"Prompt: {prompt}"
     try:
-        client.chat_postMessage(channel=channel_id, text=message)
+        result = client.chat_postMessage(channel=channel_id, text=message)
+        client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
     except SlackApiError as e:
         error = e.response["error"]
         if error == "not_in_channel":
             try:
                 client.conversations_join(channel=channel_id)
-                client.chat_postMessage(channel=channel_id, text=message)
+                result = client.chat_postMessage(channel=channel_id, text=message)
+                client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
             except SlackApiError as join_error:
                 respond(f"Something went wrong: {join_error.response['error']}")
         elif error == "channel_not_found":
