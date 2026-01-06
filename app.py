@@ -1,10 +1,16 @@
 import os
+import threading
+import time
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+
+def thinking(client, channel_id, thread_ts):
+    time.sleep(30)
+    client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text="Thought about it.")
 
 @app.command("/agent")
 def handle_agent_command(ack, command, client, respond):
@@ -15,6 +21,7 @@ def handle_agent_command(ack, command, client, respond):
     try:
         result = client.chat_postMessage(channel=channel_id, text=message)
         client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
+        threading.Thread(target=thinking, args=(client, channel_id, result["ts"])).start()
     except SlackApiError as e:
         error = e.response["error"]
         if error == "not_in_channel":
@@ -22,6 +29,7 @@ def handle_agent_command(ack, command, client, respond):
                 client.conversations_join(channel=channel_id)
                 result = client.chat_postMessage(channel=channel_id, text=message)
                 client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
+                threading.Thread(target=thinking, args=(client, channel_id, result["ts"])).start()
             except SlackApiError as join_error:
                 respond(f"Something went wrong: {join_error.response['error']}")
         elif error == "channel_not_found":
