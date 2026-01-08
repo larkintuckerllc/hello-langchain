@@ -1,18 +1,20 @@
 import os
 import threading
-import time
 
-from langchain.chat_models import init_chat_model
+from langchain.agents import create_agent
+from langchain.messages import HumanMessage
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
-model = init_chat_model(model="gpt-5-nano")
+agent = create_agent(model="gpt-5-nano")
 
 def thinking(prompt, client, channel_id, thread_ts):
-    response = model.invoke(prompt)
-    client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=response.content)
+    response = agent.invoke({
+        "messages": [HumanMessage(content=prompt)],
+    })
+    client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=response["messages"][-1].content)
 
 @app.command("/agent")
 def handle_agent_command(ack, command, client, respond):
