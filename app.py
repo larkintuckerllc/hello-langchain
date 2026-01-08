@@ -3,12 +3,21 @@ import threading
 
 from langchain.agents import create_agent
 from langchain.messages import HumanMessage
+from langchain.tools import tool
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
-agent = create_agent(model="gpt-5-nano")
+
+@tool
+def square_root(x: float) -> float:
+    """
+    Calculate the square root of a number.
+    """
+    return x ** 0.5
+
+agent = create_agent(model="gpt-5-nano", tools=[square_root])
 
 def thinking(prompt, client, channel_id, thread_ts):
     response = agent.invoke({
