@@ -11,6 +11,8 @@ from slack_sdk.errors import SlackApiError
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 bot_user_id = None
+thinking_threads = []
+thinking_threads_lock = threading.Lock()
 
 def get_bot_user_id(client):
     global bot_user_id
@@ -32,11 +34,19 @@ agent = create_agent(
 )
 
 def thinking(prompt, client, channel_id, thread_ts):
-    response = agent.invoke(
-        {"messages": [HumanMessage(content=prompt)],},
-        config = {"configurable": {"thread_id": f"{channel_id}_{thread_ts}"}}
-    )
-    client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=response["messages"][-1].content)
+    try:
+        response = agent.invoke(
+            {"messages": [HumanMessage(content=prompt)],},
+            config = {"configurable": {"thread_id": f"{channel_id}_{thread_ts}"}}
+        )
+        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=response["messages"][-1].content)
+    finally:
+        with thinking_threads_lock:
+            thinking_threads.remove(f"{channel_id}_{thread_ts}")
+
+def is_thinking_thread(channel_id, thread_ts):
+    with thinking_threads_lock:
+        return f"{channel_id}_{thread_ts}" in thinking_threads
 
 def is_app_thread(client, channel_id, thread_ts):
     try:
@@ -58,7 +68,13 @@ def handle_message_in_thread(event, client):
     channel_id = event.get("channel")
     if not is_app_thread(client, channel_id, thread_ts):
         return
+    if is_thinking_thread(channel_id, thread_ts):
+        client.reactions_add(channel=channel_id, timestamp=event.get("ts"), name="no_entry_sign")
+        client.chat_postEphemeral(channel=channel_id, thread_ts=thread_ts, user=event.get("user"), text="I'm already thinking about this. Please wait for me to finish.")
+        return
     prompt = event.get("text", "")
+    with thinking_threads_lock:
+        thinking_threads.append(f"{channel_id}_{thread_ts}")
     client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text="Thinking...")
     threading.Thread(target=thinking, args=(prompt, client, channel_id, thread_ts)).start()
 
@@ -70,6 +86,8 @@ def handle_agent_command(ack, command, client, respond):
     message = f"Prompt: {prompt}"
     try:
         result = client.chat_postMessage(channel=channel_id, text=message)
+        with thinking_threads_lock:
+            thinking_threads.append(f"{channel_id}_{result['ts']}")
         client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
         threading.Thread(target=thinking, args=(prompt, client, channel_id, result["ts"])).start()
     except SlackApiError as e:
@@ -78,6 +96,8 @@ def handle_agent_command(ack, command, client, respond):
             try:
                 client.conversations_join(channel=channel_id)
                 result = client.chat_postMessage(channel=channel_id, text=message)
+                with thinking_threads_lock:
+                    thinking_threads.append(f"{channel_id}_{result['ts']}")
                 client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
                 threading.Thread(target=thinking, args=(prompt, client, channel_id, result["ts"])).start()
             except SlackApiError as join_error:
