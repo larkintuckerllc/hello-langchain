@@ -2,6 +2,7 @@ import os
 import threading
 
 from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
 from langchain.messages import HumanMessage
 from langchain.tools import tool
 from slack_bolt import App
@@ -9,6 +10,13 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+bot_user_id = None
+
+def get_bot_user_id(client):
+    global bot_user_id
+    if bot_user_id is None:
+        bot_user_id = client.auth_test()["user_id"]
+    return bot_user_id
 
 @tool
 def square_root(x: float) -> float:
@@ -17,13 +25,42 @@ def square_root(x: float) -> float:
     """
     return x ** 0.5
 
-agent = create_agent(model="gpt-5-nano", tools=[square_root])
+agent = create_agent(
+    checkpointer=InMemorySaver(), 
+    model="gpt-5-nano",
+    tools=[square_root],
+)
 
 def thinking(prompt, client, channel_id, thread_ts):
-    response = agent.invoke({
-        "messages": [HumanMessage(content=prompt)],
-    })
+    response = agent.invoke(
+        {"messages": [HumanMessage(content=prompt)],},
+        config = {"configurable": {"thread_id": f"{channel_id}_{thread_ts}"}}
+    )
     client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=response["messages"][-1].content)
+
+def is_app_thread(client, channel_id, thread_ts):
+    try:
+        result = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=1)
+        messages = result.get("messages", [])
+        if messages:
+            return messages[0].get("user") == get_bot_user_id(client)
+        return False
+    except SlackApiError:
+        return False
+
+@app.event("message")
+def handle_message_in_thread(event, client):
+    if event.get("bot_id") or event.get("subtype"):
+        return
+    thread_ts = event.get("thread_ts")
+    if not thread_ts:
+        return
+    channel_id = event.get("channel")
+    if not is_app_thread(client, channel_id, thread_ts):
+        return
+    prompt = event.get("text", "")
+    client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text="Thinking...")
+    threading.Thread(target=thinking, args=(prompt, client, channel_id, thread_ts)).start()
 
 @app.command("/agent")
 def handle_agent_command(ack, command, client, respond):
@@ -34,7 +71,7 @@ def handle_agent_command(ack, command, client, respond):
     try:
         result = client.chat_postMessage(channel=channel_id, text=message)
         client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
-        threading.Thread(target=thinking, args=(prompt,client, channel_id, result["ts"])).start()
+        threading.Thread(target=thinking, args=(prompt, client, channel_id, result["ts"])).start()
     except SlackApiError as e:
         error = e.response["error"]
         if error == "not_in_channel":
@@ -42,7 +79,7 @@ def handle_agent_command(ack, command, client, respond):
                 client.conversations_join(channel=channel_id)
                 result = client.chat_postMessage(channel=channel_id, text=message)
                 client.chat_postMessage(channel=channel_id, thread_ts=result["ts"], text="Thinking...")
-                threading.Thread(target=thinking, args=(client, channel_id, result["ts"])).start()
+                threading.Thread(target=thinking, args=(prompt, client, channel_id, result["ts"])).start()
             except SlackApiError as join_error:
                 respond(f"Something went wrong: {join_error.response['error']}")
         elif error == "channel_not_found":
