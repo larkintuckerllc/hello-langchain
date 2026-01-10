@@ -2,6 +2,7 @@ import os
 import threading
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.messages import HumanMessage
 from langchain.tools import tool
@@ -29,6 +30,13 @@ def square_root(x: float) -> float:
 
 agent = create_agent(
     checkpointer=InMemorySaver(), 
+    middleware=[
+        SummarizationMiddleware(
+            model="gpt-5-nano",
+            trigger=("tokens", 10000),
+            keep=("messages", 4)
+        )
+    ],
     model="gpt-5-nano",
     tools=[square_root],
 )
